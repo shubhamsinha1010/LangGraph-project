@@ -5,10 +5,13 @@ instances without starting a real server.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.middleware.logging import RequestLoggingMiddleware
 from api.routes import health, incidents, webhooks
@@ -62,6 +65,11 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(incidents.router, prefix="/api/v1")
     app.include_router(webhooks.router, prefix="/api/v1")
+
+    # Serve frontend demo at /ui
+    frontend_dir = Path(__file__).parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 
     return app
 
