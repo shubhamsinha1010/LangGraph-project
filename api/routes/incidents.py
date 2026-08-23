@@ -27,6 +27,7 @@ from api.schemas.incident import (
 from incident_commander.core.config import get_settings
 from incident_commander.core.constants import IncidentStatus
 from incident_commander.core.exceptions import IncidentNotFoundError
+from incident_commander.services.tracing import get_langsmith_run_url
 from incident_commander.core.logging import get_logger
 from incident_commander.core.state import initial_state
 from incident_commander.graphs.supervisor import graph
@@ -248,6 +249,21 @@ async def stream_tokens(incident_id: str) -> EventSourceResponse:
     return EventSourceResponse(
         _token_stream(incident_id, input_state=None),
     )
+
+
+@router.get("/{incident_id}/trace")
+async def get_trace_url(incident_id: str) -> dict[str, str | None]:
+    """Return the LangSmith trace URL for an incident.
+
+    Requires LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY to be set.
+    Returns null for the url field when tracing is disabled.
+    """
+    url = get_langsmith_run_url(incident_id)
+    return {
+        "incident_id": incident_id,
+        "trace_url": url,
+        "tracing_enabled": str(url is not None).lower(),
+    }
 
 
 @router.delete("/{incident_id}", status_code=200)

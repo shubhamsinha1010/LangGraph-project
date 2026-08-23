@@ -12,6 +12,7 @@ from incident_commander.core.constants import AgentRole
 from incident_commander.core.logging import get_logger
 from incident_commander.core.output_models import LogAnalystOutput
 from incident_commander.services.llm_factory import get_llm
+from incident_commander.services.tracing import run_name_config
 from incident_commander.tools.langchain_tools import INVESTIGATION_TOOLS
 
 logger = get_logger(__name__)
@@ -22,6 +23,8 @@ async def log_analyst_node(state: dict[str, Any]) -> dict[str, Any]:
     service = state.get("affected_service", "unknown")
     logger.info("log_analyst.start", service=service)
 
+    incident_id = state.get("incident_id", "unknown")
+    trace_cfg = run_name_config("log_analyst", incident_id)
     tool_map = {t.name: t for t in INVESTIGATION_TOOLS}
     tool_llm = get_llm().bind_tools(INVESTIGATION_TOOLS)
 
@@ -45,7 +48,7 @@ async def log_analyst_node(state: dict[str, Any]) -> dict[str, Any]:
     # Structured synthesis pass — type-safe, no manual JSON parsing
     synthesis_llm = get_llm().with_structured_output(LogAnalystOutput)
     tool_results = "\n".join(
-        m.content for m in messages if isinstance(m, type(messages[-1])) and hasattr(m, "tool_call_id")  # ToolMessages
+        m.content for m in messages if hasattr(m, "tool_call_id")
     )
     output: LogAnalystOutput = await synthesis_llm.ainvoke(
         [

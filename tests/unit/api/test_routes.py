@@ -193,6 +193,23 @@ class TestIncidentHistory:
 #  DELETE /incidents/{id}
 # --------------------------------------------------------------------------- #
 
+class TestTraceEndpoint:
+    async def test_trace_returns_null_when_tracing_disabled(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/v1/incidents/ANY-ID/trace")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["trace_url"] is None
+        assert data["tracing_enabled"] == "false"
+
+    async def test_trace_returns_url_when_tracing_enabled(self, client: AsyncClient) -> None:
+        with patch("api.routes.incidents.get_langsmith_run_url") as mock_url:
+            mock_url.return_value = "https://smith.langchain.com/o/traces?project=test"
+            resp = await client.get("/api/v1/incidents/INC-TRACE/trace")
+        assert resp.status_code == 200
+        assert "smith.langchain.com" in resp.json()["trace_url"]
+        assert resp.json()["tracing_enabled"] == "true"
+
+
 class TestCloseIncident:
     async def test_close_existing_incident(self, client: AsyncClient) -> None:
         incident_id = "INC-CLOSE-001"
