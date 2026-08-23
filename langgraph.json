@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "incident_commander": "./incident_commander/graphs/supervisor.py:graph"
+  },
+  "env": ".env",
+  "python_version": "3.11"
+}
