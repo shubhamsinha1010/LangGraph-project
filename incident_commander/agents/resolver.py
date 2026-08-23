@@ -1,4 +1,6 @@
-"""Resolver node — marks the incident as resolved."""
+"""Resolver and escalation nodes — async."""
+
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
@@ -9,7 +11,7 @@ from incident_commander.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def resolver_node(state: dict[str, Any]) -> dict[str, Any]:
+async def resolver_node(state: dict[str, Any]) -> dict[str, Any]:
     """Mark the incident resolved and write a final summary."""
     incident_id = state.get("incident_id", "unknown")
     logger.info("resolver.resolving", incident=incident_id)
@@ -37,7 +39,7 @@ def resolver_node(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def escalation_node(state: dict[str, Any]) -> dict[str, Any]:
+async def escalation_node(state: dict[str, Any]) -> dict[str, Any]:
     """Mark the incident as needing human escalation."""
     incident_id = state.get("incident_id", "unknown")
     logger.warning("escalation.triggered", incident=incident_id)

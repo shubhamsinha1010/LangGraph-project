@@ -1,4 +1,6 @@
-"""Supervisor node — routes the investigation based on current state."""
+"""Supervisor node and routing functions — async."""
+
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
@@ -9,18 +11,14 @@ from incident_commander.core.constants import (
     IncidentStatus,
     RoutingDecision,
 )
-from incident_commander.core.exceptions import MaxCyclesExceededError
 from incident_commander.core.logging import get_logger
+from incident_commander.core.state import initial_state
 
 logger = get_logger(__name__)
 
 
-def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Assess current state and decide what the next step should be.
-
-    This is a pure routing function — it does not call an LLM.
-    Routing logic lives here (not scattered in edges) for testability.
-    """
+async def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Assess current state and decide the next step. Pure routing — no LLM."""
     settings = get_settings()
     cycles = state.get("investigation_cycles", 0)
     routing = state.get("routing_decision")
@@ -34,13 +32,8 @@ def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
         status=status,
     )
 
-    # Guard: prevent infinite investigation loops
     if cycles >= settings.max_investigation_cycles:
-        logger.warning(
-            "supervisor.max_cycles_exceeded",
-            incident=state.get("incident_id"),
-            cycles=cycles,
-        )
+        logger.warning("supervisor.max_cycles_exceeded", incident=state.get("incident_id"))
         return {
             "routing_decision": RoutingDecision.ESCALATE,
             "status": IncidentStatus.INVESTIGATING,
@@ -54,7 +47,6 @@ def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
             ],
         }
 
-    # Initial entry — start investigation
     if status == IncidentStatus.OPEN or routing is None:
         return {
             "routing_decision": RoutingDecision.INVESTIGATE,
@@ -70,7 +62,6 @@ def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
             ],
         }
 
-    # Planner said more investigation needed
     if routing == RoutingDecision.INVESTIGATE:
         return {
             "investigation_cycles": cycles + 1,
@@ -85,7 +76,6 @@ def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
             ],
         }
 
-    # Planner produced a destructive plan — wait for human
     if routing == RoutingDecision.AWAIT_APPROVAL:
         return {
             "status": IncidentStatus.AWAITING_APPROVAL,
@@ -103,9 +93,7 @@ def supervisor_node(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def route_after_supervisor(state: dict[str, Any]) -> str:
-    """Conditional edge — returns the name of the next node."""
     routing = state.get("routing_decision")
-
     if routing == RoutingDecision.INVESTIGATE:
         return "investigate"
     if routing == RoutingDecision.AWAIT_APPROVAL:
@@ -120,7 +108,6 @@ def route_after_supervisor(state: dict[str, Any]) -> str:
 
 
 def route_after_planner(state: dict[str, Any]) -> str:
-    """Conditional edge after the planner runs."""
     routing = state.get("routing_decision")
     if routing == RoutingDecision.INVESTIGATE:
         return "supervisor"
@@ -132,7 +119,6 @@ def route_after_planner(state: dict[str, Any]) -> str:
 
 
 def route_after_executor(state: dict[str, Any]) -> str:
-    """Conditional edge after execution."""
     result = state.get("execution_result", {})
     if result.get("success"):
         return "resolve"

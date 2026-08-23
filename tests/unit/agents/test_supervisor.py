@@ -1,7 +1,6 @@
-"""Unit tests for the supervisor node and conditional routing functions.
+"""Unit tests for the supervisor node and conditional routing."""
 
-These test routing logic without invoking any LLM — pure Python, runs instantly.
-"""
+from __future__ import annotations
 
 import pytest
 
@@ -20,31 +19,31 @@ from incident_commander.core.state import initial_state
 
 
 class TestSupervisorNode:
-    def test_initial_entry_routes_to_investigate(self) -> None:
+    async def test_initial_entry_routes_to_investigate(self) -> None:
         state = initial_state(
-            incident_id="INC-001",
-            title="Test",
-            description="Test desc",
-            severity=IncidentSeverity.HIGH,
-            affected_service="svc",
+            incident_id="INC-001", title="Test", description="Test desc",
+            severity=IncidentSeverity.HIGH, affected_service="svc",
         )
-        result = supervisor_node(state)
+        result = await supervisor_node(state)
         assert result["routing_decision"] == RoutingDecision.INVESTIGATE
         assert result["status"] == IncidentStatus.INVESTIGATING
         assert result["investigation_cycles"] == 1
 
-    def test_open_status_always_investigates(self) -> None:
+    async def test_open_status_always_investigates(self) -> None:
         state = {
             "incident_id": "INC-002",
             "status": IncidentStatus.OPEN,
             "routing_decision": None,
             "investigation_cycles": 0,
         }
-        result = supervisor_node(state)
+        result = await supervisor_node(state)
         assert result["routing_decision"] == RoutingDecision.INVESTIGATE
 
-    def test_max_cycles_triggers_escalation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_max_cycles_triggers_escalation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from incident_commander.core import config as cfg
+
         mock_settings = cfg.get_settings()
         monkeypatch.setattr(mock_settings, "max_investigation_cycles", 3)
 
@@ -54,28 +53,25 @@ class TestSupervisorNode:
             "routing_decision": RoutingDecision.INVESTIGATE,
             "investigation_cycles": 3,
         }
-        result = supervisor_node(state)
+        result = await supervisor_node(state)
         assert result["routing_decision"] == RoutingDecision.ESCALATE
 
-    def test_await_approval_sets_status(self) -> None:
+    async def test_await_approval_sets_status(self) -> None:
         state = {
             "incident_id": "INC-004",
             "status": IncidentStatus.INVESTIGATING,
             "routing_decision": RoutingDecision.AWAIT_APPROVAL,
             "investigation_cycles": 1,
         }
-        result = supervisor_node(state)
+        result = await supervisor_node(state)
         assert result["status"] == IncidentStatus.AWAITING_APPROVAL
 
-    def test_audit_trail_always_appended(self) -> None:
+    async def test_audit_trail_always_appended(self) -> None:
         state = initial_state(
-            incident_id="INC-005",
-            title="T",
-            description="D",
-            severity=IncidentSeverity.LOW,
-            affected_service="svc",
+            incident_id="INC-005", title="T", description="D",
+            severity=IncidentSeverity.LOW, affected_service="svc",
         )
-        result = supervisor_node(state)
+        result = await supervisor_node(state)
         assert len(result["audit_trail"]) == 1
         assert "agent" in result["audit_trail"][0]
 
@@ -113,12 +109,10 @@ class TestRouteAfterPlanner:
 
 class TestRouteAfterExecutor:
     def test_success_routes_to_resolve(self) -> None:
-        state = {"execution_result": {"success": True}}
-        assert route_after_executor(state) == "resolve"
+        assert route_after_executor({"execution_result": {"success": True}}) == "resolve"
 
     def test_failure_routes_to_escalate(self) -> None:
-        state = {"execution_result": {"success": False}}
-        assert route_after_executor(state) == "escalate"
+        assert route_after_executor({"execution_result": {"success": False}}) == "escalate"
 
     def test_missing_result_escalates(self) -> None:
         assert route_after_executor({}) == "escalate"

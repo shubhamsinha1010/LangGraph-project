@@ -1,26 +1,29 @@
-"""Executor node — carries out the approved action.
+"""Executor node — async, structured output, records to long-term memory."""
 
-This node only runs after human approval has been recorded in state.
-It enforces that guard at the node level as a defence-in-depth measure.
-"""
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from incident_commander.agents.base import load_prompt, parse_json_from_message
+from incident_commander.agents.base import load_prompt, run_tool_loop
 from incident_commander.core.constants import AgentRole, IncidentStatus, RoutingDecision
 from incident_commander.core.exceptions import ApprovalRequiredError
 from incident_commander.core.logging import get_logger
+from incident_commander.core.output_models import ExecutorOutput
 from incident_commander.services.llm_factory import get_llm
+from incident_commander.services.memory_store import (
+    IncidentMemoryEntry,
+    record_incident_resolution,
+)
 from incident_commander.tools.langchain_tools import DESTRUCTIVE_TOOLS
 
 logger = get_logger(__name__)
 
 
-def executor_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Execute the approved action using the appropriate tool."""
+async def executor_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Execute the approved action and record the outcome to long-term memory."""
     approved_action = state.get("approved_action")
     incident_id = state.get("incident_id", "unknown")
 
@@ -34,65 +37,72 @@ def executor_node(state: dict[str, Any]) -> dict[str, Any]:
         service=approved_action.get("service"),
     )
 
-    llm = get_llm().bind_tools(DESTRUCTIVE_TOOLS)
-    system_prompt = load_prompt("executor")
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(
-            content=(
-                f"Execute the following approved action:\n\n"
-                f"**Action type:** {approved_action.get('action_type')}\n"
-                f"**Description:** {approved_action.get('description')}\n"
-                f"**Service:** {approved_action.get('service')}\n"
-                f"**Incident ID (use as task_id):** {incident_id}\n"
-                f"**Approval notes:** {state.get('approval_notes', 'None')}\n\n"
-                f"Call the appropriate tool now."
-            )
-        ),
-    ]
-
     tool_map = {t.name: t for t in DESTRUCTIVE_TOOLS}
-    tool_results: list[str] = []
+    tool_llm = get_llm().bind_tools(DESTRUCTIVE_TOOLS)
 
-    for _ in range(3):
-        response = llm.invoke(messages)
-        messages.append(response)
-        if not getattr(response, "tool_calls", None):
-            break
-        for tc in response.tool_calls:
-            tool_fn = tool_map.get(tc["name"])
-            if tool_fn:
-                tool_output = tool_fn.invoke(tc["args"])
-                tool_results.append(str(tool_output))
-                from langchain_core.messages import ToolMessage
-                messages.append(
-                    ToolMessage(content=str(tool_output), tool_call_id=tc["id"])
+    messages = await run_tool_loop(
+        llm=tool_llm,
+        messages=[
+            SystemMessage(content=load_prompt("executor")),
+            HumanMessage(
+                content=(
+                    f"Execute the approved action:\n\n"
+                    f"**Action type:** {approved_action.get('action_type')}\n"
+                    f"**Description:** {approved_action.get('description')}\n"
+                    f"**Service:** {approved_action.get('service')}\n"
+                    f"**Incident ID (use as task_id):** {incident_id}\n"
+                    f"**Approval notes:** {state.get('approval_notes', 'None')}"
                 )
+            ),
+        ],
+        tool_map=tool_map,
+        max_rounds=3,
+    )
 
-    parsed = parse_json_from_message(response)
-    success = parsed.get("success", bool(tool_results))
+    synthesis_llm = get_llm().with_structured_output(ExecutorOutput)
+    tool_results = "\n".join(
+        m.content for m in messages if hasattr(m, "tool_call_id")
+    )
+    output: ExecutorOutput = await synthesis_llm.ainvoke(
+        [
+            SystemMessage(content=load_prompt("executor")),
+            HumanMessage(
+                content=(
+                    f"Summarise the execution result:\n\n"
+                    f"Action: {approved_action.get('description')}\n"
+                    f"Tool outputs:\n{tool_results or 'No tool outputs.'}"
+                )
+            ),
+        ]
+    )
+
+    # Record outcome to long-term memory so future incidents benefit
+    record_incident_resolution(
+        IncidentMemoryEntry(
+            incident_id=incident_id,
+            service=approved_action.get("service", "unknown"),
+            diagnosis=state.get("diagnosis", ""),
+            action_taken=output.action_taken,
+            resolved=output.success,
+            resolution_minutes=0,  # could be computed from audit_trail timestamps
+        )
+    )
 
     return {
-        "execution_result": {
-            "action_taken": parsed.get("action_taken", approved_action.get("description")),
-            "tool_called": parsed.get("tool_called", "unknown"),
-            "success": success,
-            "result_summary": parsed.get("result_summary", "\n".join(tool_results)),
-            "tool_outputs": tool_results,
-        },
+        "execution_result": output.model_dump(),
         "status": (
-            IncidentStatus.RESOLVED if success else IncidentStatus.INVESTIGATING
+            IncidentStatus.RESOLVED if output.success else IncidentStatus.INVESTIGATING
         ),
         "routing_decision": (
-            RoutingDecision.RESOLVE if success else RoutingDecision.ESCALATE
+            RoutingDecision.RESOLVE if output.success else RoutingDecision.ESCALATE
         ),
         "audit_trail": [
             {
                 "agent": AgentRole.EXECUTOR,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
                 "action": approved_action.get("action_type"),
-                "success": success,
+                "success": output.success,
+                "recorded_to_memory": True,
             }
         ],
     }

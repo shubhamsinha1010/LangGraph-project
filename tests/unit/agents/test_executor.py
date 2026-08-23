@@ -1,19 +1,24 @@
-"""Unit tests for the executor node."""
+"""Unit tests for the executor node — async, structured output mocks."""
 
-import json
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage
 
-from incident_commander.agents.executor import executor_node
 from incident_commander.core.constants import IncidentSeverity, IncidentStatus
 from incident_commander.core.exceptions import ApprovalRequiredError
+from incident_commander.core.output_models import ExecutorOutput
 from incident_commander.core.state import initial_state
 
 
-def _ai_msg(payload: dict) -> AIMessage:
-    return AIMessage(content=json.dumps(payload))
+def _executor_llm_mock(output: ExecutorOutput) -> MagicMock:
+    m = MagicMock()
+    bound = MagicMock()
+    m.bind_tools.return_value = bound
+    bound.ainvoke = AsyncMock(return_value=MagicMock(tool_calls=None, content="done"))
+    m.with_structured_output.return_value.ainvoke = AsyncMock(return_value=output)
+    return m
 
 
 @pytest.fixture()
@@ -39,75 +44,99 @@ def approved_state() -> dict:
 
 
 class TestExecutorNode:
-    def test_raises_without_approval(self) -> None:
+    async def test_raises_without_approval(self) -> None:
+        from incident_commander.agents.executor import executor_node
+
         state = initial_state(
-            incident_id="INC-002",
-            title="T",
-            description="D",
-            severity=IncidentSeverity.HIGH,
-            affected_service="svc",
+            incident_id="INC-002", title="T", description="D",
+            severity=IncidentSeverity.HIGH, affected_service="svc",
         )
         with pytest.raises(ApprovalRequiredError):
-            executor_node(state)
+            await executor_node(state)
 
     @patch("incident_commander.agents.executor.get_llm")
-    def test_executes_approved_rollback(
+    async def test_executes_approved_rollback(
         self, mock_get_llm: MagicMock, approved_state: dict
     ) -> None:
-        mock_llm = MagicMock()
-        bound_llm = MagicMock()
-        mock_llm.bind_tools.return_value = bound_llm
-        bound_llm.invoke.return_value = _ai_msg({
-            "action_taken": "Rolled back checkout-api",
-            "tool_called": "rollback_to_previous_version",
-            "success": True,
-            "result_summary": "Rollback succeeded. Health check passing.",
-            "next_step": "monitor",
-        })
-        mock_get_llm.return_value = mock_llm
+        from incident_commander.agents.executor import executor_node
 
-        result = executor_node(approved_state)
+        mock_get_llm.return_value = _executor_llm_mock(
+            ExecutorOutput(
+                action_taken="Rolled back checkout-api",
+                tool_called="rollback_to_previous_version",
+                success=True,
+                result_summary="Rollback succeeded.",
+                next_step="resolve",
+            )
+        )
+
+        result = await executor_node(approved_state)
         assert result["execution_result"]["success"] is True
         assert result["status"] == IncidentStatus.RESOLVED
 
     @patch("incident_commander.agents.executor.get_llm")
-    def test_failed_execution_stays_investigating(
+    async def test_failed_execution_stays_investigating(
         self, mock_get_llm: MagicMock, approved_state: dict
     ) -> None:
-        mock_llm = MagicMock()
-        bound_llm = MagicMock()
-        mock_llm.bind_tools.return_value = bound_llm
-        bound_llm.invoke.return_value = _ai_msg({
-            "action_taken": "Attempted rollback",
-            "tool_called": "rollback_to_previous_version",
-            "success": False,
-            "result_summary": "Rollback failed.",
-            "next_step": "escalate",
-        })
-        mock_get_llm.return_value = mock_llm
+        from incident_commander.agents.executor import executor_node
 
-        result = executor_node(approved_state)
+        mock_get_llm.return_value = _executor_llm_mock(
+            ExecutorOutput(
+                action_taken="Attempted rollback",
+                tool_called="rollback_to_previous_version",
+                success=False,
+                result_summary="Rollback failed.",
+                next_step="escalate",
+            )
+        )
+
+        result = await executor_node(approved_state)
         assert result["execution_result"]["success"] is False
         assert result["status"] == IncidentStatus.INVESTIGATING
 
     @patch("incident_commander.agents.executor.get_llm")
-    def test_audit_trail_records_execution(
+    async def test_records_to_long_term_memory(
         self, mock_get_llm: MagicMock, approved_state: dict
     ) -> None:
-        mock_llm = MagicMock()
-        bound_llm = MagicMock()
-        mock_llm.bind_tools.return_value = bound_llm
-        bound_llm.invoke.return_value = _ai_msg({
-            "action_taken": "Rollback",
-            "tool_called": "rollback_to_previous_version",
-            "success": True,
-            "result_summary": "Done.",
-            "next_step": "resolve",
-        })
-        mock_get_llm.return_value = mock_llm
+        from incident_commander.agents.executor import executor_node
+        from incident_commander.services.memory_store import recall_past_incidents, reset_store
 
-        result = executor_node(approved_state)
+        reset_store()
+        mock_get_llm.return_value = _executor_llm_mock(
+            ExecutorOutput(
+                action_taken="Rolled back checkout-api",
+                tool_called="rollback_to_previous_version",
+                success=True,
+                result_summary="Success.",
+                next_step="resolve",
+            )
+        )
+
+        await executor_node(approved_state)
+
+        past = recall_past_incidents("checkout-api", limit=5)
+        assert len(past) >= 1
+        assert past[0]["service"] == "checkout-api"
+        assert past[0]["resolved"] is True
+
+    @patch("incident_commander.agents.executor.get_llm")
+    async def test_audit_trail_records_execution(
+        self, mock_get_llm: MagicMock, approved_state: dict
+    ) -> None:
+        from incident_commander.agents.executor import executor_node
+
+        mock_get_llm.return_value = _executor_llm_mock(
+            ExecutorOutput(
+                action_taken="Rollback",
+                tool_called="rollback_to_previous_version",
+                success=True,
+                result_summary="Done.",
+                next_step="resolve",
+            )
+        )
+
+        result = await executor_node(approved_state)
         trail = result["audit_trail"]
         assert len(trail) == 1
         assert trail[0]["agent"] == "executor"
-        assert "success" in trail[0]
+        assert trail[0]["recorded_to_memory"] is True

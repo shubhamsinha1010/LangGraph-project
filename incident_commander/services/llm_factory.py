@@ -1,14 +1,15 @@
-"""LLM factory — provider-agnostic LLM construction with retry.
+"""LLM factory — provider-agnostic, cached, async-compatible.
 
-Follows the Open/Closed Principle: add new providers without touching
-existing node code.
+All nodes use get_llm() which returns a ChatOpenAI instance.
+ChatOpenAI natively supports both .invoke() (sync) and .ainvoke() (async).
 """
+
+from __future__ import annotations
 
 from functools import lru_cache
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from incident_commander.core.config import get_settings
 from incident_commander.core.exceptions import LLMError
@@ -23,23 +24,12 @@ def build_llm(
     temperature: float | None = None,
     streaming: bool = False,
 ) -> BaseChatModel:
-    """Construct and return a chat model instance.
-
-    Args:
-        model: Override the default model from settings.
-        temperature: Override the default temperature from settings.
-        streaming: Enable streaming mode.
-    """
+    """Construct and return a chat model instance."""
     settings = get_settings()
     chosen_model = model or settings.llm_model
     chosen_temp = temperature if temperature is not None else settings.llm_temperature
 
-    logger.info(
-        "building_llm",
-        model=chosen_model,
-        temperature=chosen_temp,
-        streaming=streaming,
-    )
+    logger.info("building_llm", model=chosen_model, temperature=chosen_temp, streaming=streaming)
 
     try:
         return ChatOpenAI(
@@ -56,5 +46,8 @@ def build_llm(
 
 @lru_cache(maxsize=4)
 def get_llm(model: str | None = None, streaming: bool = False) -> BaseChatModel:
-    """Cached LLM getter — same model+streaming combo returns the same instance."""
+    """Cached LLM getter — same model+streaming combo returns the same instance.
+
+    The returned instance supports both .invoke() and .ainvoke() natively.
+    """
     return build_llm(model=model, streaming=streaming)

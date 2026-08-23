@@ -1,73 +1,72 @@
-"""Log Analyst node.
+"""Log Analyst node — async, structured output."""
 
-Queries error logs for the affected service and writes log_findings to state.
-"""
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from incident_commander.agents.base import load_prompt, parse_json_from_message
+from incident_commander.agents.base import load_prompt, run_tool_loop
 from incident_commander.core.constants import AgentRole
 from incident_commander.core.logging import get_logger
+from incident_commander.core.output_models import LogAnalystOutput
 from incident_commander.services.llm_factory import get_llm
 from incident_commander.tools.langchain_tools import INVESTIGATION_TOOLS
 
 logger = get_logger(__name__)
 
 
-def log_analyst_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Invoke the log analyst agent and return log_findings updates."""
+async def log_analyst_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Query error logs and return structured findings."""
     service = state.get("affected_service", "unknown")
     logger.info("log_analyst.start", service=service)
 
-    llm = get_llm().bind_tools(INVESTIGATION_TOOLS)
-    system_prompt = load_prompt("log_analyst")
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(
-            content=(
-                f"Investigate logs for the following incident:\n\n"
-                f"**Title:** {state.get('title', '')}\n"
-                f"**Service:** {service}\n"
-                f"**Description:** {state.get('description', '')}\n\n"
-                f"Query the last 15 minutes of logs."
-            )
-        ),
-    ]
-
-    # Tool-use loop — keep invoking until the LLM stops requesting tools
     tool_map = {t.name: t for t in INVESTIGATION_TOOLS}
-    for _ in range(5):  # max 5 tool rounds
-        response = llm.invoke(messages)
-        messages.append(response)
+    tool_llm = get_llm().bind_tools(INVESTIGATION_TOOLS)
 
-        if not getattr(response, "tool_calls", None):
-            break
-
-        for tc in response.tool_calls:
-            tool_fn = tool_map.get(tc["name"])
-            if tool_fn:
-                tool_output = tool_fn.invoke(tc["args"])
-                from langchain_core.messages import ToolMessage
-                messages.append(
-                    ToolMessage(content=str(tool_output), tool_call_id=tc["id"])
+    messages = await run_tool_loop(
+        llm=tool_llm,
+        messages=[
+            SystemMessage(content=load_prompt("log_analyst")),
+            HumanMessage(
+                content=(
+                    f"Investigate logs for:\n"
+                    f"**Title:** {state.get('title', '')}\n"
+                    f"**Service:** {service}\n"
+                    f"**Description:** {state.get('description', '')}\n\n"
+                    f"Query the last 15 minutes of logs."
                 )
+            ),
+        ],
+        tool_map=tool_map,
+    )
 
-    parsed = parse_json_from_message(response)
-    findings: list[str] = parsed.get("findings", [])
-    if not findings:
-        findings = [f"Log analyst completed. Error rate: {parsed.get('error_rate_pct', '?')}%"]
+    # Structured synthesis pass — type-safe, no manual JSON parsing
+    synthesis_llm = get_llm().with_structured_output(LogAnalystOutput)
+    tool_results = "\n".join(
+        m.content for m in messages if isinstance(m, type(messages[-1])) and hasattr(m, "tool_call_id")  # ToolMessages
+    )
+    output: LogAnalystOutput = await synthesis_llm.ainvoke(
+        [
+            SystemMessage(content=load_prompt("log_analyst")),
+            HumanMessage(
+                content=(
+                    f"Synthesise the following tool results into structured findings "
+                    f"for service '{service}':\n\n{tool_results or 'No tool results.'}"
+                )
+            ),
+        ]
+    )
 
     return {
-        "log_findings": findings,
+        "log_findings": output.findings,
         "audit_trail": [
             {
                 "agent": AgentRole.LOG_ANALYST,
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-                "findings_count": len(findings),
+                "findings_count": len(output.findings),
+                "error_rate_pct": output.error_rate_pct,
             }
         ],
     }
