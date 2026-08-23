@@ -24,6 +24,7 @@ from api.schemas.incident import (
     CreateIncidentRequest,
     IncidentStatusResponse,
 )
+from incident_commander.core.config import get_settings
 from incident_commander.core.constants import IncidentStatus
 from incident_commander.core.exceptions import IncidentNotFoundError
 from incident_commander.core.logging import get_logger
@@ -39,7 +40,11 @@ logger = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 
 def _config(incident_id: str) -> dict[str, Any]:
-    return {"configurable": {"thread_id": incident_id}}
+    settings = get_settings()
+    return {
+        "configurable": {"thread_id": incident_id},
+        "recursion_limit": settings.max_investigation_cycles * 12,
+    }
 
 
 async def _get_state(incident_id: str) -> dict[str, Any]:
