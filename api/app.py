@@ -14,6 +14,7 @@ from api.middleware.logging import RequestLoggingMiddleware
 from api.routes import health, incidents
 from incident_commander.core.config import get_settings
 from incident_commander.core.logging import configure_logging, get_logger
+from incident_commander.services.tracing import configure_tracing
 
 logger = get_logger(__name__)
 
@@ -22,10 +23,12 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    configure_tracing()
     logger.info(
         "app.startup",
         environment=settings.environment,
         checkpoint_backend=settings.checkpoint_backend,
+        tracing=settings.langchain_tracing_v2,
     )
     yield
     logger.info("app.shutdown")
