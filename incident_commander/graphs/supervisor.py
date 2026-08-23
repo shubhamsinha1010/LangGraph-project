@@ -25,6 +25,7 @@ from incident_commander.agents.supervisor import (
     route_after_supervisor,
     supervisor_node,
 )
+from incident_commander.core.config import get_settings
 from incident_commander.core.state import IncidentStateDict
 from incident_commander.graphs.investigation_subgraph import investigation_subgraph
 from incident_commander.services.checkpointer import get_sync_checkpointer
@@ -109,7 +110,6 @@ def build_graph(checkpointer: object | None = None) -> object:
     compile_kwargs: dict = {}
     if checkpointer is not None:
         compile_kwargs["checkpointer"] = checkpointer
-        # Pause BEFORE the human_approval node — state is serialised here
         compile_kwargs["interrupt_before"] = ["human_approval"]
 
     return builder.compile(**compile_kwargs)

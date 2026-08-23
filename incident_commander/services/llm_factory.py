@@ -1,12 +1,17 @@
-"""LLM factory — provider-agnostic, cached, async-compatible.
+"""LLM factory — provider-agnostic, async-compatible.
 
-All nodes use get_llm() which returns a ChatOpenAI instance.
-ChatOpenAI natively supports both .invoke() (sync) and .ainvoke() (async).
+Design note on caching:
+  ChatOpenAI instances are mutable — they carry callback state that can be
+  mutated during invocation. Sharing a single cached instance across parallel
+  async nodes risks race conditions on that internal state.
+
+  Solution: cache the *configuration* (model, temperature, streaming) and
+  construct a fresh instance per call, which is cheap. The underlying HTTP
+  client pool IS shared via the openai library's module-level singleton, so
+  we get connection reuse without sharing mutable LLM state.
 """
 
 from __future__ import annotations
-
-from functools import lru_cache
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -18,18 +23,22 @@ from incident_commander.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def build_llm(
-    *,
+def get_llm(
     model: str | None = None,
     temperature: float | None = None,
     streaming: bool = False,
 ) -> BaseChatModel:
-    """Construct and return a chat model instance."""
+    """Build and return a fresh ChatOpenAI instance per call.
+
+    Fresh instances share the underlying HTTP connection pool (openai-level
+    singleton) but do NOT share mutable callback / metadata state, making
+    them safe for concurrent async invocation from parallel graph nodes.
+    """
     settings = get_settings()
     chosen_model = model or settings.llm_model
     chosen_temp = temperature if temperature is not None else settings.llm_temperature
 
-    logger.info("building_llm", model=chosen_model, temperature=chosen_temp, streaming=streaming)
+    logger.debug("building_llm", model=chosen_model, temperature=chosen_temp, streaming=streaming)
 
     try:
         return ChatOpenAI(
@@ -42,12 +51,3 @@ def build_llm(
         )
     except Exception as exc:
         raise LLMError(f"Failed to construct LLM '{chosen_model}': {exc}") from exc
-
-
-@lru_cache(maxsize=4)
-def get_llm(model: str | None = None, streaming: bool = False) -> BaseChatModel:
-    """Cached LLM getter — same model+streaming combo returns the same instance.
-
-    The returned instance supports both .invoke() and .ainvoke() natively.
-    """
-    return build_llm(model=model, streaming=streaming)
