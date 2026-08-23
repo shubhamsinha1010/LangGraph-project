@@ -42,14 +42,32 @@ class IncidentMemoryEntry:
 
 
 def get_store() -> InMemoryStore:
-    """Return the singleton in-memory store.
+    """Return the store singleton.
 
-    Swap for AsyncPostgresStore in production — the interface is identical.
+    Development: InMemoryStore (resets on restart — fine for local dev/tests).
+    Production: set MEMORY_BACKEND=postgres in .env to use AsyncPostgresStore.
+      Both expose the identical .put() / .search() interface — the rest of
+      the codebase never needs to change.
     """
     global _store
     if _store is None:
-        _store = InMemoryStore()
+        settings = _get_settings()
+        if getattr(settings, "memory_backend", "memory") == "postgres" and settings.database_url:
+            try:
+                from langgraph.store.postgres import AsyncPostgresStore  # type: ignore[import]
+                _store = AsyncPostgresStore.from_conn_string(settings.database_url)  # type: ignore[assignment]
+                logger.info("memory_store.using_postgres")
+            except ImportError:
+                logger.warning("memory_store.postgres_unavailable — falling back to in-memory")
+                _store = InMemoryStore()
+        else:
+            _store = InMemoryStore()
     return _store
+
+
+def _get_settings():  # type: ignore[return]
+    from incident_commander.core.config import get_settings
+    return get_settings()
 
 
 _store: InMemoryStore | None = None

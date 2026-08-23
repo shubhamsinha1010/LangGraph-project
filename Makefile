@@ -1,4 +1,4 @@
-.PHONY: install dev test test-unit test-integration lint typecheck clean docker-up docker-down
+.PHONY: install dev test test-unit test-integration lint typecheck clean docker-up docker-down pre-commit-install
 
 install:
 	pip install -e ".[dev]"
@@ -25,6 +25,12 @@ format:
 
 typecheck:
 	mypy incident_commander api
+
+pre-commit-install:
+	pre-commit install
+
+pre-commit-run:
+	pre-commit run --all-files
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
