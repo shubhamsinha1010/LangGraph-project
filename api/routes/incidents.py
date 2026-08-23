@@ -24,6 +24,7 @@ from api.schemas.incident import (
     CreateIncidentRequest,
     IncidentStatusResponse,
 )
+from api.schemas.webhook import EditPlanRequest
 from incident_commander.core.config import get_settings
 from incident_commander.core.constants import IncidentStatus
 from incident_commander.core.exceptions import IncidentNotFoundError
@@ -249,6 +250,56 @@ async def stream_tokens(incident_id: str) -> EventSourceResponse:
     return EventSourceResponse(
         _token_stream(incident_id, input_state=None),
     )
+
+
+@router.patch("/{incident_id}/edit-plan", status_code=200)
+async def edit_plan(incident_id: str, body: EditPlanRequest) -> dict[str, Any]:
+    """Modify a proposed action before approving it.
+
+    This completes the full HITL contract:
+      inspect state → edit plan (this endpoint) → approve → execute
+
+    The engineer can change e.g. the target rollback version, or the service
+    name, before approving. Uses graph.update_state() to patch the proposed
+    actions list in the checkpoint.
+
+    Example: change a generic 'rollback to previous' into
+             'rollback to v2.1.0 specifically'.
+    """
+    try:
+        state = await _get_state(incident_id)
+    except IncidentNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+
+    proposed_actions: list[dict[str, Any]] = list(state.get("proposed_actions", []))
+    if body.action_index >= len(proposed_actions):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"action_index {body.action_index} out of range. "
+                f"{len(proposed_actions)} actions available (0-indexed)."
+            ),
+        )
+
+    updated_action = {**proposed_actions[body.action_index], **body.updates}
+    proposed_actions[body.action_index] = updated_action
+
+    config = _config(incident_id)
+    graph.update_state(config, {"proposed_actions": proposed_actions})
+
+    logger.info(
+        "incident.plan_edited",
+        incident_id=incident_id,
+        action_index=body.action_index,
+        updates=body.updates,
+        notes=body.notes,
+    )
+    return {
+        "incident_id": incident_id,
+        "action_index": body.action_index,
+        "updated_action": updated_action,
+        "notes": body.notes,
+    }
 
 
 @router.get("/{incident_id}/trace")

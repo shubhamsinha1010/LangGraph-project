@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.logging import RequestLoggingMiddleware
-from api.routes import health, incidents
+from api.routes import health, incidents, webhooks
 from incident_commander.core.config import get_settings
 from incident_commander.core.logging import configure_logging, get_logger
 from incident_commander.services.tracing import configure_tracing
@@ -61,6 +61,7 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(health.router)
     app.include_router(incidents.router, prefix="/api/v1")
+    app.include_router(webhooks.router, prefix="/api/v1")
 
     return app
 
